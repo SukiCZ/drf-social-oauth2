@@ -89,7 +89,8 @@ class SocialTokenServer(TokenEndpoint):
         # https://tools.ietf.org/html/rfc6749#section-4.3.2
         # https://tools.ietf.org/html/rfc6749#section-4.4.2
 
-        request.scopes = utils.scope_to_list(request.scope)
+        if request.scope:
+            request.scopes = utils.scope_to_list(request.scope)
 
         request.extra_credentials = credentials
         if grant_type_for_scope:
@@ -110,6 +111,9 @@ class SocialTokenServer(TokenEndpoint):
         return grant_type_handler.create_token_response(
             request, self.default_token_type
         )
+
+    def _raise_on_bad_post_request(self, request):
+        pass
 
     def __check_for_no_existing_tokens(self, request: Request):
         """
