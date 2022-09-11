@@ -3,6 +3,7 @@ from json import dumps
 
 from django.http import HttpRequest
 from django.utils import timezone
+from oauthlib.oauth2.rfc6749 import utils
 from oauth2_provider.models import get_access_token_model
 
 from oauthlib.common import Request
@@ -75,47 +76,40 @@ class SocialTokenServer(TokenEndpoint):
 
     # We override this method just so we can pass the django request object
     @catch_errors_and_unavailability
-    def create_token_response(
-        self, uri, http_method='GET', body=None, headers=None, credentials=None
-    ):
+    def create_token_response(self, uri, http_method='POST', body=None,
+                              headers=None, credentials=None, grant_type_for_scope=None,
+                              claims=None):
         """Extract grant_type and route to the designated handler."""
         request = self.__create_django_request(
             uri, http_method, body, headers, credentials
         )
-        grant_type_handler = self.grant_types.get(
-            request.grant_type, self.default_grant_type_handler
+        self.validate_token_request(request)
+        # 'scope' is an allowed Token Request param in both the "Resource Owner Password Credentials Grant"
+        # and "Client Credentials Grant" flows
+        # https://tools.ietf.org/html/rfc6749#section-4.3.2
+        # https://tools.ietf.org/html/rfc6749#section-4.4.2
+
+        request.scopes = utils.scope_to_list(request.scope)
+
+        request.extra_credentials = credentials
+        if grant_type_for_scope:
+            request.grant_type = grant_type_for_scope
+
+        # OpenID Connect claims, if provided.  The server using oauthlib might choose
+        # to implement the claims parameter of the Authorization Request.  In this case
+        # it should retrieve those claims and pass them via the claims argument here,
+        # as a dict.
+        if claims:
+            request.claims = claims
+
+        grant_type_handler = self.grant_types.get(request.grant_type,
+                                                  self.default_grant_type_handler)
+        log.debug('Dispatching grant_type %s request to %r.',
+                  request.grant_type, grant_type_handler)
+
+        return grant_type_handler.create_token_response(
+            request, self.default_token_type
         )
-        log.debug(
-            'Dispatching grant_type %s request to %r.',
-            request.grant_type,
-            grant_type_handler,
-        )
-
-        # validates request and assigns user to request object.
-        SocialTokenGrant(self.request_validator).validate_token_request(request)
-
-        access_token = self.__check_for_no_existing_tokens(request)
-        # Checks if the last token created exists, and if so, if token is still valid.
-        if access_token is None or (access_token and access_token.is_expired()):
-            # create the request again, as a convert_token grant type.
-            request = self.__create_django_request(
-                uri, http_method, body, headers, credentials
-            )
-            return grant_type_handler.create_token_response(
-                request, self.default_token_type
-            )
-
-        # if token is valid, do not create a new token, just return the token.
-        token = {
-            'access_token': access_token.token,
-            'expires_in': (
-                access_token.expires - timezone.now()
-            ).total_seconds(),
-            'scope': access_token.scope,
-            'refresh_token': access_token.refresh_token.token,
-            'token_type': 'Bearer',
-        }
-        return headers, dumps(token), 200
 
     def __check_for_no_existing_tokens(self, request: Request):
         """
